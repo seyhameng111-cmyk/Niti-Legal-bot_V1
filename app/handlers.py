@@ -10,6 +10,7 @@ from typing import Any
 from app import ui
 from app.config import Settings
 from app.gas_client import GasClient, GasError, TelegramContext
+from app.models import LawOption
 from app.rate_limit import SlidingWindowRateLimiter
 from app.state import AnswerMode, MemoryStateStore
 from app.telegram_api import TelegramAPI, TelegramApiError
@@ -57,19 +58,74 @@ class BotHandlers:
         if not isinstance(chat_id, int) or not isinstance(user_id, int):
             return
 
+        if data == "noop":
+            return
+
+        if data == "menu":
+            await self._show_law_menu(chat_id, user_id, message_id=message_id)
+            return
+
+        if data == "catalog:refresh":
+            await self._show_law_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                force_refresh=True,
+            )
+            return
+
+        if data.startswith("laws:page:"):
+            try:
+                page = int(data.rsplit(":", 1)[1])
+            except ValueError:
+                page = 0
+            await self._show_law_menu(
+                chat_id, user_id, message_id=message_id, page=page
+            )
+            return
+
+        if data.startswith("law:"):
+            law_id = data.split(":", 1)[1]
+            try:
+                laws = await self.gas.list_laws()
+                law = next((item for item in laws if item.id == law_id), None)
+                if law is None:
+                    laws = await self.gas.list_laws(force_refresh=True)
+                    law = next((item for item in laws if item.id == law_id), None)
+                if law is None:
+                    raise GasError("ច្បាប់នេះត្រូវបានដកចេញ ឬបិទពី LAW_CATALOG។")
+            except GasError as exc:
+                await self._show_catalog_error(chat_id, message_id, str(exc))
+                return
+
+            await self.state.set_law(chat_id, user_id, law)
+            text, keyboard = ui.mode_menu(self.settings.bot_brand_name, law)
+            await self._edit_or_send(chat_id, message_id, text, keyboard)
+            return
+
+        if data == "mode:menu":
+            await self._show_mode_menu(chat_id, user_id, message_id)
+            return
+
         if data.startswith("mode:"):
             try:
                 mode = AnswerMode(data.split(":", 1)[1])
             except ValueError:
                 return
-            await self.state.set_mode(chat_id, user_id, mode)
-            text, keyboard = ui.mode_selected(self.settings.bot_brand_name, mode)
-            await self._edit_or_send(chat_id, message_id, text, keyboard)
-            return
 
-        if data == "menu":
-            mode = await self.state.get_mode(chat_id, user_id)
-            text, keyboard = ui.main_menu(self.settings.bot_brand_name, mode)
+            session = await self.state.get_session(chat_id, user_id)
+            law = session.as_law_option()
+            if law is None:
+                await self._show_law_menu(chat_id, user_id, message_id=message_id)
+                return
+
+            try:
+                await self.state.set_mode(chat_id, user_id, mode)
+            except ValueError:
+                await self._show_law_menu(chat_id, user_id, message_id=message_id)
+                return
+
+            text, keyboard = ui.mode_selected(self.settings.bot_brand_name, law, mode)
             await self._edit_or_send(chat_id, message_id, text, keyboard)
             return
 
@@ -79,17 +135,28 @@ class BotHandlers:
             return
 
         if data == "ask:again":
-            mode = await self.state.get_mode(chat_id, user_id)
-            if mode is None:
-                text, keyboard = ui.main_menu(self.settings.bot_brand_name)
+            session = await self.state.get_session(chat_id, user_id)
+            law = session.as_law_option()
+            if law is None:
+                await self._show_law_menu(chat_id, user_id)
+            elif session.mode is None:
+                text, keyboard = ui.mode_menu(self.settings.bot_brand_name, law)
+                await self.telegram.send_message(chat_id, text, keyboard)
             else:
-                text = f"✍️ <b>សូមផ្ញើសំណួរបន្ទាប់</b>\nMode បច្ចុប្បន្ន៖ {ui.mode_label(mode)}"
+                text = (
+                    "✍️ <b>សូមផ្ញើសំណួរបន្ទាប់</b>\n"
+                    f"📘 {html.escape(law.title)}\n"
+                    f"🎯 {ui.mode_label(session.mode)}"
+                )
                 keyboard = {
                     "inline_keyboard": [
-                        [{"text": "🔄 ប្ដូរ Mode", "callback_data": "menu"}]
+                        [
+                            {"text": "🎯 ប្ដូរ Mode", "callback_data": "mode:menu"},
+                            {"text": "📘 ប្ដូរច្បាប់", "callback_data": "menu"},
+                        ]
                     ]
                 }
-            await self.telegram.send_message(chat_id, text, keyboard)
+                await self.telegram.send_message(chat_id, text, keyboard)
 
     async def _handle_message(
         self, message: dict[str, Any], update_id: int | None
@@ -113,10 +180,11 @@ class BotHandlers:
 
         if text.startswith("/"):
             command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
-            if command in {"/start", "/menu", "/mode"}:
-                mode = await self.state.get_mode(chat_id, user_id)
-                menu_text, keyboard = ui.main_menu(self.settings.bot_brand_name, mode)
-                await self.telegram.send_message(chat_id, menu_text, keyboard)
+            if command in {"/start", "/menu", "/law"}:
+                await self._show_law_menu(chat_id, user_id)
+                return
+            if command == "/mode":
+                await self._show_mode_menu(chat_id, user_id)
                 return
             if command == "/help":
                 help_text, keyboard = ui.help_message(self.settings.bot_brand_name)
@@ -127,12 +195,21 @@ class BotHandlers:
             )
             return
 
-        mode = await self.state.get_mode(chat_id, user_id)
-        if mode is None:
-            menu_text, keyboard = ui.main_menu(self.settings.bot_brand_name)
+        session = await self.state.get_session(chat_id, user_id)
+        law = session.as_law_option()
+        if law is None:
             await self.telegram.send_message(
                 chat_id,
-                "🔐 <b>សូមជ្រើស Mode មុនសិន</b>\n\n" + menu_text,
+                "🔐 <b>សូមជ្រើសច្បាប់មុនសិន</b>\nប្រើ /law ដើម្បីបើកបណ្ណាល័យច្បាប់។",
+            )
+            await self._show_law_menu(chat_id, user_id)
+            return
+
+        if session.mode is None:
+            mode_text, keyboard = ui.mode_menu(self.settings.bot_brand_name, law)
+            await self.telegram.send_message(
+                chat_id,
+                "🎯 <b>សូមជ្រើសរបៀបឆ្លើយមុនសិន</b>\n\n" + mode_text,
                 keyboard,
             )
             return
@@ -168,8 +245,55 @@ class BotHandlers:
                 user=user,
                 update_id=update_id,
                 question=text,
-                mode=mode,
+                law=law,
+                mode=session.mode,
             )
+
+    async def _show_law_menu(
+        self,
+        chat_id: int,
+        user_id: int,
+        *,
+        message_id: int | None = None,
+        page: int = 0,
+        force_refresh: bool = False,
+    ) -> None:
+        try:
+            laws = await self.gas.list_laws(force_refresh=force_refresh)
+        except GasError as exc:
+            await self._show_catalog_error(chat_id, message_id, str(exc))
+            return
+
+        if not laws:
+            text, keyboard = ui.empty_law_menu(self.settings.bot_brand_name)
+        else:
+            session = await self.state.get_session(chat_id, user_id)
+            text, keyboard = ui.law_menu(
+                self.settings.bot_brand_name,
+                laws,
+                page=page,
+                page_size=self.settings.law_menu_page_size,
+                current_law_id=session.law_id,
+            )
+        await self._edit_or_send(chat_id, message_id, text, keyboard)
+
+    async def _show_mode_menu(
+        self, chat_id: int, user_id: int, message_id: int | None = None
+    ) -> None:
+        session = await self.state.get_session(chat_id, user_id)
+        law = session.as_law_option()
+        if law is None:
+            await self._show_law_menu(chat_id, user_id, message_id=message_id)
+            return
+        text, keyboard = ui.mode_menu(self.settings.bot_brand_name, law, session.mode)
+        await self._edit_or_send(chat_id, message_id, text, keyboard)
+
+    async def _show_catalog_error(
+        self, chat_id: int, message_id: int | None, error: str
+    ) -> None:
+        logger.warning("Law catalog error: %s", error)
+        text, keyboard = ui.empty_law_menu(self.settings.bot_brand_name, error)
+        await self._edit_or_send(chat_id, message_id, text, keyboard)
 
     async def _answer_question(
         self,
@@ -179,16 +303,20 @@ class BotHandlers:
         user: dict[str, Any],
         update_id: int | None,
         question: str,
+        law: LawOption,
         mode: AnswerMode,
     ) -> None:
         logger.info(
-            "Routing legal question chat_id=%s user_id=%s mode=%s chars=%s",
+            "Routing legal question chat_id=%s user_id=%s law_id=%s mode=%s chars=%s",
             chat_id,
             user_id,
+            law.id,
             mode.value,
             len(question),
         )
-        status = await self.telegram.send_message(chat_id, ui.processing_message(mode))
+        status = await self.telegram.send_message(
+            chat_id, ui.processing_message(law, mode)
+        )
         status_message_id = status.get("message_id")
         typing_task = asyncio.create_task(self._keep_typing(chat_id))
         context = TelegramContext(
@@ -199,18 +327,19 @@ class BotHandlers:
             update_id=update_id,
         )
         try:
-            answer = await self.gas.ask(mode, question, context)
+            answer = await self.gas.ask(mode, question, law, context)
         except GasError as exc:
             logger.warning(
-                "GAS request failed chat_id=%s mode=%s error=%s",
+                "GAS request failed chat_id=%s law_id=%s mode=%s error=%s",
                 chat_id,
+                law.id,
                 mode.value,
                 exc,
             )
             error_text = (
                 "❌ <b>មិនអាចរៀបចំចម្លើយបាន</b>\n"
                 f"{html.escape(str(exc))}\n\n"
-                "សូមព្យាយាមម្ដងទៀត ឬចុចប្ដូរ Mode។"
+                "សូមព្យាយាមម្ដងទៀត ឬប្ដូរច្បាប់/Mode។"
             )
             await self._edit_or_send(
                 chat_id, status_message_id, error_text, ui.answer_keyboard()
@@ -236,7 +365,7 @@ class BotHandlers:
         for index, chunk in enumerate(chunks):
             continuation = f" <i>({index + 1}/{total})</i>" if total > 1 else ""
             rendered = (
-                ui.answer_header(mode)
+                ui.answer_header(law, mode)
                 + continuation
                 + ("\n" if continuation else "")
                 + ui.escape_answer(chunk)
