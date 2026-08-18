@@ -1,0 +1,4 @@
+law_id,title_km,button_label,emoji,direct_md_file_id,explain_law_name,sheet_tab_name,active,sort_order
+civil_code,ក្រមរដ្ឋប្បវេណី,ក្រមរដ្ឋប្បវេណី,⚖️,REPLACE_MD_FILE_ID,REPLACE_MASTER_LAW_NAME,REPLACE_SHEET_TAB,FALSE,10
+civil_procedure,ក្រមនីតិវិធីរដ្ឋប្បវេណី,ក្រមនីតិវិធីរដ្ឋប្បវេណី,📘,REPLACE_MD_FILE_ID,REPLACE_MASTER_LAW_NAME,REPLACE_SHEET_TAB,FALSE,20
+criminal_code,ក្រមព្រហ្មទណ្ឌ,ក្រមព្រហ្មទណ្ឌ,⚖️,REPLACE_MD_FILE_ID,REPLACE_MASTER_LAW_NAME,REPLACE_SHEET_TAB,FALSE,30
