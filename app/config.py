@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr
     telegram_webhook_secret: SecretStr
     public_base_url: str | None = None
+    # Automatically injected by Northflank for public service ports.
+    nf_hosts: str | None = None
     render_external_hostname: str | None = None
     auto_set_webhook: bool = True
     configure_bot_profile: bool = True
@@ -32,15 +34,19 @@ class Settings(BaseSettings):
 
     gas_literal_url: str
     gas_explain_url: str
+    # Optional. When omitted, the explanatory GAS also serves LAW_CATALOG.
+    gas_catalog_url: str | None = None
     gas_api_key: SecretStr | None = None
     gas_api_key_field: str = "apiKey"
     gas_question_field: str = "question"
     gas_literal_response_path: str = "answer"
     gas_explain_response_path: str = "answer"
     gas_timeout_seconds: float = Field(default=90.0, ge=5.0, le=300.0)
+    law_catalog_cache_seconds: int = Field(default=300, ge=0, le=3600)
     gemini_model: str = "gemini-3.5-flash-lite"
 
     bot_brand_name: str = "នីតិ AI"
+    law_menu_page_size: int = Field(default=8, ge=4, le=10)
     max_question_chars: int = Field(default=4000, ge=100, le=12000)
     rate_limit_questions: int = Field(default=6, ge=1, le=100)
     rate_limit_window_seconds: int = Field(default=60, ge=10, le=3600)
@@ -64,9 +70,20 @@ class Settings(BaseSettings):
     def resolved_public_base_url(self) -> str | None:
         if self.public_base_url:
             return self.public_base_url
+        if self.nf_hosts:
+            # NF_HOSTS can contain multiple comma-separated public DNS names.
+            first_host = self.nf_hosts.split(",", 1)[0].strip()
+            if first_host:
+                if first_host.startswith(("http://", "https://")):
+                    return first_host.rstrip("/")
+                return f"https://{first_host.strip('/')}"
         if self.render_external_hostname:
             return f"https://{self.render_external_hostname.strip('/')}"
         return None
+
+    @property
+    def resolved_gas_catalog_url(self) -> str:
+        return self.gas_catalog_url or self.gas_explain_url
 
     @property
     def webhook_url(self) -> str | None:

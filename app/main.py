@@ -16,10 +16,16 @@ from app.rate_limit import SlidingWindowRateLimiter
 from app.state import MemoryStateStore
 from app.telegram_api import TelegramAPI, TelegramApiError
 
+APP_VERSION = "2.1.0"
+
 logging.basicConfig(
     level=getattr(logging, get_settings().log_level.upper(), logging.INFO),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+# httpx logs the full Telegram Bot API URL, which contains the bot token.
+# Keep transport logs disabled in production to prevent credential disclosure.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -44,13 +50,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.processor = processor
         app.state.bot_ready = False
         await processor.start()
+        logger.info("Starting %s version %s", config.app_name, APP_VERSION)
 
         try:
             bot = await telegram.get_me()
             logger.info("Telegram bot connected: @%s", bot.get("username"))
-            if config.configure_bot_profile:
-                await telegram.set_commands()
-                await telegram.set_description(config.bot_brand_name)
             if config.auto_set_webhook:
                 if config.webhook_url:
                     await telegram.set_webhook(
@@ -60,12 +64,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     logger.info("Telegram webhook configured: %s", config.webhook_url)
                 else:
                     logger.warning(
-                        "Webhook not configured: set PUBLIC_BASE_URL "
-                        "or RENDER_EXTERNAL_HOSTNAME"
+                        "Webhook not configured: expose a Northflank public port, "
+                        "or set PUBLIC_BASE_URL/RENDER_EXTERNAL_HOSTNAME"
                     )
             app.state.bot_ready = True
         except TelegramApiError:
             logger.exception("Telegram startup configuration failed")
+
+        if app.state.bot_ready and config.configure_bot_profile:
+            try:
+                await telegram.set_commands()
+                await telegram.set_description(config.bot_brand_name)
+            except TelegramApiError:
+                # Profile cosmetics must never prevent the webhook from working.
+                logger.exception("Telegram profile configuration failed")
 
         yield
 
@@ -75,7 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title=config.app_name,
-        version="1.0.0",
+        version=APP_VERSION,
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -84,7 +96,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/")
     async def root() -> dict[str, str]:
-        return {"service": config.app_name, "status": "online"}
+        return {
+            "service": config.app_name,
+            "version": APP_VERSION,
+            "status": "online",
+        }
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:
@@ -92,14 +108,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.app.state, "processor", None
         )
         store: MemoryStateStore | None = getattr(request.app.state, "state_store", None)
+        platform = (
+            "northflank"
+            if config.nf_hosts
+            else "render"
+            if config.render_external_hostname
+            else "custom"
+        )
         payload: dict[str, Any] = {
             "status": "ok",
+            "version": APP_VERSION,
             "botReady": bool(getattr(request.app.state, "bot_ready", False)),
+            "platform": platform,
+            "publicUrlDetected": bool(config.resolved_public_base_url),
             "storage": "memory",
             "queueSize": processor.queue.qsize() if processor else 0,
             "selectedModes": await store.count() if store else 0,
         }
         return JSONResponse(payload)
+
+    @app.get("/telegram/webhook")
+    async def telegram_webhook_info() -> dict[str, Any]:
+        return {
+            "status": "ready",
+            "version": APP_VERSION,
+            "message": (
+                "Telegram delivers updates with POST; browser GET is diagnostic only."
+            ),
+        }
 
     @app.post("/telegram/webhook")
     async def telegram_webhook(

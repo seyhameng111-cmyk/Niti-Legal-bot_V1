@@ -57,9 +57,10 @@ class TelegramAPI:
             "setMyCommands",
             {
                 "commands": [
-                    {"command": "start", "description": "ចាប់ផ្ដើម និងបើក Menu"},
-                    {"command": "menu", "description": "បើក Menu មេ"},
+                    {"command": "start", "description": "បើកបណ្ណាល័យច្បាប់"},
+                    {"command": "law", "description": "ជ្រើស ឬប្ដូរច្បាប់"},
                     {"command": "mode", "description": "ប្ដូររបៀបឆ្លើយ"},
+                    {"command": "menu", "description": "បើក Menu មេ"},
                     {"command": "help", "description": "របៀបប្រើប្រាស់"},
                 ]
             },
