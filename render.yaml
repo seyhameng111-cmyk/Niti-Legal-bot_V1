@@ -14,7 +14,7 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_WEBHOOK_SECRET
-        generateValue: true
+        sync: false
       - key: GAS_LITERAL_URL
         sync: false
       - key: GAS_EXPLAIN_URL
@@ -23,6 +23,10 @@ services:
         value: gemini-3.5-flash-lite
       - key: BOT_BRAND_NAME
         value: នីតិ AI
+      - key: LAW_MENU_PAGE_SIZE
+        value: "8"
+      - key: LAW_CATALOG_CACHE_SECONDS
+        value: "300"
       - key: AUTO_SET_WEBHOOK
         value: "true"
       - key: CONFIGURE_BOT_PROFILE
