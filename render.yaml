@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: niti-legal-router-bot
+    runtime: python
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: GAS_LITERAL_URL
+        sync: false
+      - key: GAS_EXPLAIN_URL
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: BOT_BRAND_NAME
+        value: នីតិ AI
+      - key: AUTO_SET_WEBHOOK
+        value: "true"
+      - key: CONFIGURE_BOT_PROFILE
+        value: "true"
+      - key: LOG_LEVEL
+        value: INFO
